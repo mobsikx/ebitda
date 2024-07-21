@@ -10,6 +10,10 @@ import os
 import urllib.parse
 import openai
 from dotenv import load_dotenv
+from pdfminer.high_level import extract_text
+from pdf2image import convert_from_bytes
+import pytesseract
+from PIL import Image
 
 # load .env
 load_dotenv()
@@ -82,7 +86,7 @@ def get_pdf_download_link(session, document_page_url):
 def analyze_pdf_with_openai(pdf_text):
     messages = [
         {"role": "system", "content": "You are a financial data extraction assistant."},
-        {"role": "user", "content": f"Extract financial data needed for EBITDA calculation from the following text:\n\n{pdf_text}\n\nPlease calculate the EBITDA and provide the exact result only. Translate strings into numbers, ex. thousands means the number should have 000 attached at the end. Also, instead of this output 'EBITDA: 1,505,563,000 - 353,956,000 - 509,163,000 - 16,971,000 = 625,473,000', please provide the result as the left side of equation only, eg.: '1505563000 - 353956000 - 509163000 - 16971000', which means numbers only, remove the separators as well. Don't provide any text, just the numbers and mathematical signs like plus and minus."}
+        {"role": "user", "content": f"Extract financial data needed for EBITDA calculation from the following text:\n\n{pdf_text}\n\nPlease remove the ',' thousand separators and any blank space between digits. The result should be provided in a format A - B - C + D + E, e.g.: 5678000 - 2345000 - 1234000 + 345000 + 123000. Nothing else on the output. Don't explain anything."}
     ]
     response = openai.chat.completions.create(
         model="gpt-4o",
@@ -91,6 +95,7 @@ def analyze_pdf_with_openai(pdf_text):
         temperature=0.2,
     )
     result = response.choices[0].message.content.strip()
+    print(f"{result}")
     return result
 
 def calculate_ebitda(s):
@@ -117,14 +122,42 @@ def extract_financial_data_from_pdf(session, pdf_url):
         return None
 
     pdf_data = BytesIO(response.content)
-    reader = PyPDF2.PdfReader(pdf_data)
-    text = ''
-    for page in reader.pages:
-        text += page.extract_text()
+    
+    # Try extracting text using PyPDF2
+    try:
+        reader = PyPDF2.PdfReader(pdf_data)
+        text = ''
+        for page in reader.pages:
+            text += page.extract_text()
+        if text.strip():
+            financial_data = analyze_pdf_with_openai(text)
+            return financial_data
+    except Exception as e:
+        print(f"PyPDF2 extraction failed: {e}")
+    
+    # Try extracting text using pdfminer.six
+    try:
+        text = extract_text(pdf_data)
+        if text.strip():
+            financial_data = analyze_pdf_with_openai(text)
+            return financial_data
+    except Exception as e:
+        print(f"pdfminer.six extraction failed: {e}")
+    
+    # Use OCR as a fallback
+    try:
+        images = convert_from_bytes(response.content)
+        ocr_text = ''
+        for image in images:
+            ocr_text += pytesseract.image_to_string(image)
+        if ocr_text.strip():
+            financial_data = analyze_pdf_with_openai(ocr_text)
+            return financial_data
+    except Exception as e:
+        print(f"OCR extraction failed: {e}")
 
-    # Send the text to OpenAI API for analysis
-    financial_data = analyze_pdf_with_openai(text)
-    return financial_data
+    print("PDF text extraction failed using all methods.")
+    return None
 
 def main(company_name):
     with requests.Session() as session:
